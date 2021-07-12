@@ -1,0 +1,5 @@
+*~
+*.sw?
+tags
+lib-tags
+*.exe
