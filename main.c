@@ -4,15 +4,16 @@
 typedef uint32_t u32;
 typedef uint8_t bool;
 typedef uint8_t u8;
+typedef int16_t i16;
 
 #define true 1
 #define false 0
 
 #define internal static // static functions are "internal"
 
-#define PIXEL_SCALE 10
-#define SCREEN_WIDTH 50
-#define SCREEN_HEIGHT 50
+#define PIXEL_SCALE 5
+#define SCREEN_WIDTH 100
+#define SCREEN_HEIGHT 100
 
 // Identify empty space
 #define EMPTY_SPACE 0x00000000
@@ -21,6 +22,9 @@ typedef uint8_t u8;
 
 // Create projectiles as pixel particles
 #define PROJECTILE_COLOR 0xFFFF0000 // opaque red
+#define GRAVITY 1
+#define PHYSICS_RATE 4 // must be a power of 2 so u32 % rate wraps OK
+#define BLAST -12
 
 typedef struct
 {
@@ -29,6 +33,12 @@ typedef struct
     int w; // width
     int h; // height
 } rect_t;
+
+typedef struct
+{
+    i16 dx; // vertical (think rows)
+    i16 dy; // horizontal (think cols)
+} momentum_t;
 
 /**
  *  \brief Move rectangle topleft to x,y
@@ -95,43 +105,106 @@ inline internal u32 ColorAt(int x, int y, u32 *screen_pixels)
     }
 }
 
-internal void InitProjectile(u32 *buffer)
+/**
+ *  \brief Get particle momentum
+ *
+ *  \param x    Screen row number (0 is top)
+ *  \param y    Screen col number (0 is left)
+ *  \param momentum Pointer to the momentum buffer
+ *
+ *  \return momentum_t {i16 dx, i16 dy}
+ */
+inline internal momentum_t MomentumAt(int x, int y, momentum_t *momentum)
 {
-    int x = SCREEN_HEIGHT-1;
-    int y = SCREEN_WIDTH/2;
-
-    if (ColorAt(x,y,buffer) == EMPTY_SPACE)
+    if ((x >= 0) && (y >= 0) && (x < SCREEN_HEIGHT) && (y < SCREEN_WIDTH))
     {
-        ColorSetUnsafe(x, y, PROJECTILE_COLOR, buffer);
+        return momentum[x*SCREEN_WIDTH+y];
+    }
+    else // Pixel is outside screen area
+    {
+        // Gotta return something. How about 0,0?
+        momentum_t out_of_bounds_momentum = {0,0};
+        return out_of_bounds_momentum;
     }
 }
 
-internal void DrawProjectile(u32 *buffer, u32 *buffer_next)
+/**
+ *  \brief Set momentum in PREV buffer.
+ *
+ *  \param x    Screen row number (0 is top)
+ *  \param y    Screen col number (0 is left)
+ *  \param momentum Momentum to set at this pixel
+ *  \param momentum_buffer Pointer to the momentum buffer to write to
+ */
+inline internal void MomentumSetUnsafe(int x, int y, momentum_t momentum, momentum_t *momentum_buffer)
+{
+    momentum_buffer[x*SCREEN_WIDTH+y] = momentum;
+}
+
+/**
+ *  \brief Start a new projectile
+ *
+ *  \param projectile_buffer   Pointer to the position buffer `projectile_buffer`
+ *  \param momentum_buffer Pointer to the projectile momentum buffer `momentum`
+ */
+internal void InitProjectile(u32 *projectile_buffer, momentum_t *momentum_buffer)
+{
+    int x = SCREEN_HEIGHT-1;
+    int y = SCREEN_WIDTH/2;
+    momentum_t momentum = {BLAST,0};
+
+    if (ColorAt(x,y,projectile_buffer) == EMPTY_SPACE)
+    {
+        ColorSetUnsafe(x, y, PROJECTILE_COLOR, projectile_buffer);
+        MomentumSetUnsafe(x, y, momentum, momentum_buffer);
+    }
+}
+
+/**
+ *  \brief Update projectiles
+ *
+ *  Read the projectile locations from PREV frame and write the new locations to
+ *  the NEXT frame.
+ *
+ *  \param frame        Pointer to the `projectile_buffer`
+ *                      Projectile POSITIONS for PREV frame
+ *  \param frame_next   Pointer to the `projectile_buffer_next`
+ *                      Projectile POSITIONS for NEXT frame
+ *  \param momentum_prev Pointer to `momentum`
+ *                      Projectile MOMENTUM for PREV frame
+ *  \param momentum_next Pointer to `momentum_next`
+ *                      Projectile MOMENTUM for NEXT frame
+ */
+internal void DrawProjectile( // u32 *frame, u32 *frame_next
+        u32 *frame, u32 *frame_next,
+        momentum_t *momentum_prev, momentum_t *momentum_next
+        )
 {
     for (int row=0; row < SCREEN_HEIGHT; row++)
         for (int col=0; col < SCREEN_WIDTH; col++)
         {
-            int dx;
-            u32 color = ColorAt(row, col, buffer);
-            u32 color_above = ColorAt(row-1, col, buffer);
-            u32 color_next = ColorAt(row, col, buffer_next);
+            momentum_t momentum = MomentumAt(row, col, momentum_prev);
+            // Decelerate
+            momentum.dx += GRAVITY;
+            u32 color = ColorAt(row, col, frame);
+            u32 color_predict = ColorAt(row+momentum.dx, col, frame);
             switch (color)
             {
                 case PROJECTILE_COLOR:
-                    // TEMP: stop at top of screen
-                    if (color_above == OUT_OF_BOUNDS)
-                    {
-                        // Erase the projectile
-                        dx = 0;
-                        ColorSetUnsafe(row+dx, col, EMPTY_SPACE, buffer_next);
-                    }
-                    // Keep moving: not at top of screen yet
-                    else
-                    {
-                        // TEMP: shoot straight up at constant rate
-                        dx = -1;
-                        ColorSetUnsafe(row+dx, col, PROJECTILE_COLOR, buffer_next);
-                    }
+                        // TEMP: stop at top of screen
+                        if (color_predict == OUT_OF_BOUNDS)
+                        {
+                            // Erase the projectile
+                            ColorSetUnsafe(row, col, EMPTY_SPACE, frame_next);
+                            momentum_t momentum_new = {0,0};
+                            MomentumSetUnsafe(row, col, momentum_new, momentum_next);
+                        }
+                        // Keep moving: not at top of screen yet
+                        else
+                        {
+                            ColorSetUnsafe(row+momentum.dx, col, PROJECTILE_COLOR, frame_next);
+                            MomentumSetUnsafe(row+momentum.dx, col, momentum, momentum_next);
+                        }
                     break;
             }
         }
@@ -140,6 +213,7 @@ internal void DrawProjectile(u32 *buffer, u32 *buffer_next)
 
 int main(int argc, char **argv)
 {
+    u8 frame_num = 0;
     // ---------
     // | Setup |
     // ---------
@@ -154,7 +228,7 @@ int main(int argc, char **argv)
     // SCREEN_WIDTH and SCREEN_HEIGHT in call to
     // SDL_CreateWindow().
     SDL_Window *window = SDL_CreateWindow(
-            "momentum", // const char *title
+            "momentum - Space to launch a particle", // const char *title
             /* SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, // int x, int y */
             SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, // int x, int y
             PIXEL_SCALE*SCREEN_WIDTH, PIXEL_SCALE*SCREEN_HEIGHT, // int w, int h,
@@ -201,6 +275,10 @@ int main(int argc, char **argv)
     assert(projectile_buffer);
     u32 *projectile_buffer_next = (u32*) calloc(SCREEN_WIDTH * SCREEN_HEIGHT, sizeof(u32));
     assert(projectile_buffer_next);
+    momentum_t *momentum = (momentum_t*) calloc(SCREEN_WIDTH * SCREEN_HEIGHT, sizeof(momentum_t));
+    assert(momentum);
+    momentum_t *momentum_next = (momentum_t*) calloc(SCREEN_WIDTH * SCREEN_HEIGHT, sizeof(momentum_t));
+    assert(momentum_next);
 
     // Create player: a 1x1 rectangle
     const u8 player_size = 1;
@@ -282,7 +360,7 @@ int main(int argc, char **argv)
 
         if (pressed_space)
         {
-            InitProjectile(projectile_buffer);
+            InitProjectile(projectile_buffer, momentum);
             pressed_space = false;
         }
         if (pressed_down)
@@ -329,16 +407,23 @@ int main(int argc, char **argv)
         // | Pixel Draw |
         // --------------
 
-        // Erase old artwork
-        FillRect(entire_screen, EMPTY_SPACE, projectile_buffer_next);
+        if (frame_num++%PHYSICS_RATE == 0)
+        {
+            // Erase old artwork
+            FillRect(entire_screen, EMPTY_SPACE, projectile_buffer_next);
 
-        // Draw projectiles for next frame
-        DrawProjectile(projectile_buffer, projectile_buffer_next);
+            // Draw projectiles for next frame
+            DrawProjectile(projectile_buffer, projectile_buffer_next, momentum, momentum_next);
 
-        // Load next frame
-        u32 *tmp_pix = projectile_buffer;
-        projectile_buffer = projectile_buffer_next;
-        projectile_buffer_next = tmp_pix;
+            // Load next position frame
+            u32 *tmp_pix = projectile_buffer;
+            projectile_buffer = projectile_buffer_next;
+            projectile_buffer_next = tmp_pix;
+            // Load next momentum frame
+            momentum_t *tmp_mom = momentum;
+            momentum = momentum_next;
+            momentum_next = tmp_mom;
+        }
 
         SDL_UpdateTexture(
                 player_texture,     // SDL_Texture *
