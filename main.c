@@ -1,3 +1,7 @@
+// TODO: figure out how to let particles "pass" each other unaffected. In other
+// words, if certain particles do not interact, but they happen to land at the
+// same pixel location, how do I not lose one of them?
+//
 #include <assert.h>
 #include <SDL.h>
 
