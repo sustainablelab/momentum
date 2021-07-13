@@ -4,7 +4,7 @@
 typedef uint32_t u32;
 typedef uint8_t bool;
 typedef uint8_t u8;
-typedef int16_t i16;
+/* typedef int16_t i16; */
 
 #define true 1
 #define false 0
@@ -23,7 +23,7 @@ typedef int16_t i16;
 // Create projectiles as pixel particles
 #define PROJECTILE_COLOR 0xFFFF0000 // opaque red
 #define GRAVITY 1
-#define PHYSICS_RATE 4 // must be a power of 2 so u32 % rate wraps OK
+#define VIDEO_RATE 1 // Physics is 1ms, Video is 16ms
 #define BLAST -12
 
 typedef struct
@@ -34,10 +34,11 @@ typedef struct
     int h; // height
 } rect_t;
 
+// TODO: track calculated positions as floats as well
 typedef struct
 {
-    i16 dx; // vertical (think rows)
-    i16 dy; // horizontal (think cols)
+    float dx; // vertical (think rows)
+    float dy; // horizontal (think cols)
 } momentum_t;
 
 /**
@@ -112,7 +113,7 @@ inline internal u32 ColorAt(int x, int y, u32 *screen_pixels)
  *  \param y    Screen col number (0 is left)
  *  \param momentum Pointer to the momentum buffer
  *
- *  \return momentum_t {i16 dx, i16 dy}
+ *  \return momentum_t {float dx, float dy}
  */
 inline internal momentum_t MomentumAt(int x, int y, momentum_t *momentum)
 {
@@ -187,7 +188,8 @@ internal void DrawProjectile( // u32 *frame, u32 *frame_next
             // Decelerate
             momentum.dx += GRAVITY;
             u32 color = ColorAt(row, col, frame);
-            u32 color_predict = ColorAt(row+momentum.dx, col, frame);
+            u32 row_predict = roundf(row+momentum.dx);
+            u32 color_predict = ColorAt(row_predict, col, frame);
             switch (color)
             {
                 case PROJECTILE_COLOR:
@@ -202,8 +204,8 @@ internal void DrawProjectile( // u32 *frame, u32 *frame_next
                         // Keep moving: not at top of screen yet
                         else
                         {
-                            ColorSetUnsafe(row+momentum.dx, col, PROJECTILE_COLOR, frame_next);
-                            MomentumSetUnsafe(row+momentum.dx, col, momentum, momentum_next);
+                            ColorSetUnsafe(row_predict, col, PROJECTILE_COLOR, frame_next);
+                            MomentumSetUnsafe(row+momentum.dx, col+momentum.dy, momentum, momentum_next);
                         }
                     break;
             }
@@ -396,63 +398,66 @@ int main(int argc, char **argv)
             }
         }
 
-        // -------------
-        // | Rect Draw |
-        // -------------
+        // --------------------------
+        // | Pixel Draw and Physics |
+        // --------------------------
 
-        // Draw player
-        FillRect(player, player_color, player_buffer);
+        // Erase old artwork
+        FillRect(entire_screen, EMPTY_SPACE, projectile_buffer_next);
 
-        // --------------
-        // | Pixel Draw |
-        // --------------
+        // Draw projectiles for next frame
+        DrawProjectile(projectile_buffer, projectile_buffer_next, momentum, momentum_next);
 
-        if (frame_num++%PHYSICS_RATE == 0)
+        // Load next position frame
+        u32 *tmp_pix = projectile_buffer;
+        projectile_buffer = projectile_buffer_next;
+        projectile_buffer_next = tmp_pix;
+        // Load next momentum frame
+        momentum_t *tmp_mom = momentum;
+        momentum = momentum_next;
+        momentum_next = tmp_mom;
+
+        // ------------------------
+        // | Render to the screen |
+        // ------------------------
+
         {
-            // Erase old artwork
-            FillRect(entire_screen, EMPTY_SPACE, projectile_buffer_next);
+            // -------------
+            // | Rect Draw |
+            // -------------
+            // Draw player
+            FillRect(player, player_color, player_buffer);
 
-            // Draw projectiles for next frame
-            DrawProjectile(projectile_buffer, projectile_buffer_next, momentum, momentum_next);
+            SDL_UpdateTexture(
+                    player_texture,     // SDL_Texture *
+                    NULL,               // const SDL_Rect * - NULL updates entire texture
+                    player_buffer, // const void *pixels
+                    SCREEN_WIDTH * sizeof(u32) // int pitch - n bytes in a row of pixel data
+                    );
+            SDL_UpdateTexture(
+                    projectile_texture, // SDL_Texture *
+                    NULL,               // const SDL_Rect * - NULL updates entire texture
+                    projectile_buffer,  // const void *pixels
+                    SCREEN_WIDTH * sizeof(u32) // int pitch - n bytes in a row of pixel data
+                    );
 
-            // Load next position frame
-            u32 *tmp_pix = projectile_buffer;
-            projectile_buffer = projectile_buffer_next;
-            projectile_buffer_next = tmp_pix;
-            // Load next momentum frame
-            momentum_t *tmp_mom = momentum;
-            momentum = momentum_next;
-            momentum_next = tmp_mom;
+            SDL_RenderClear(renderer);
+            SDL_RenderCopy(
+                    renderer,       // SDL_Renderer *
+                    player_texture, // SDL_Texture *
+                    NULL, // const SDL_Rect * - SRC rect, NULL for entire TEXTURE
+                    NULL  // const SDL_Rect * - DEST rect, NULL for entire RENDERING TARGET
+                    );
+            SDL_RenderCopy(
+                    renderer,       // SDL_Renderer *
+                    projectile_texture, // SDL_Texture *
+                    NULL, // const SDL_Rect * - SRC rect, NULL for entire TEXTURE
+                    NULL  // const SDL_Rect * - DEST rect, NULL for entire RENDERING TARGET
+                    );
+            SDL_RenderPresent(renderer);
         }
+        SDL_Delay(16);
 
-        SDL_UpdateTexture(
-                player_texture,     // SDL_Texture *
-                NULL,               // const SDL_Rect * - NULL updates entire texture
-                player_buffer, // const void *pixels
-                SCREEN_WIDTH * sizeof(u32) // int pitch - n bytes in a row of pixel data
-                );
-        SDL_UpdateTexture(
-                projectile_texture, // SDL_Texture *
-                NULL,               // const SDL_Rect * - NULL updates entire texture
-                projectile_buffer,  // const void *pixels
-                SCREEN_WIDTH * sizeof(u32) // int pitch - n bytes in a row of pixel data
-                );
-
-        SDL_RenderClear(renderer);
-        SDL_RenderCopy(
-                renderer,       // SDL_Renderer *
-                player_texture, // SDL_Texture *
-                NULL, // const SDL_Rect * - SRC rect, NULL for entire TEXTURE
-                NULL  // const SDL_Rect * - DEST rect, NULL for entire RENDERING TARGET
-                );
-        SDL_RenderCopy(
-                renderer,       // SDL_Renderer *
-                projectile_texture, // SDL_Texture *
-                NULL, // const SDL_Rect * - SRC rect, NULL for entire TEXTURE
-                NULL  // const SDL_Rect * - DEST rect, NULL for entire RENDERING TARGET
-                );
-        SDL_RenderPresent(renderer);
-        SDL_Delay(15); // sets frame rate
     }
     // ---Cleanup---
 
