@@ -22,9 +22,17 @@ typedef uint8_t u8;
 
 // Create projectiles as pixel particles
 #define PROJECTILE_COLOR 0xFFFF0000 // opaque red
-#define GRAVITY 1
-#define VIDEO_RATE 1 // Physics is 1ms, Video is 16ms
-#define BLAST -12
+// Play with these numbers to tune the "feel"
+// TODO: make it so that one #define controls simulation speed.
+// Smaller physics delay moves the simulation faster.
+// Alternatively, go faster by making BLAST and GRAVITY larger.
+#define PHYSICS_DELAY 4 // ms -- Calc physics this often
+#define VIDEO_DELAY 16 // ms -- Render this often, sort of
+// Actually renders frames at FRAMES_PER_PHYSICS * PHYSICS_DELAY
+// and FRAMES_PER_PHYSICS is integer truncated (e.g., 16/3 = 5).
+#define FRAMES_PER_PHYSICS (VIDEO_DELAY/PHYSICS_DELAY)
+#define GRAVITY 0.01 // tie this to FRAMES_PER_PHYSICS?
+#define BLAST  -1.2   // tie this to FRAMES_PER_PHYSICS?
 
 typedef struct
 {
@@ -34,9 +42,10 @@ typedef struct
     int h; // height
 } rect_t;
 
-// TODO: track calculated positions as floats as well
 typedef struct
 {
+    float x;  // vertical position as float (think fractional rows)
+    float y;  // horizontal position as float (think fractional cols)
     float dx; // vertical (think rows)
     float dy; // horizontal (think cols)
 } momentum_t;
@@ -113,7 +122,7 @@ inline internal u32 ColorAt(int x, int y, u32 *screen_pixels)
  *  \param y    Screen col number (0 is left)
  *  \param momentum Pointer to the momentum buffer
  *
- *  \return momentum_t {float dx, float dy}
+ *  \return momentum_t {float x, float y, float dx, float dy}
  */
 inline internal momentum_t MomentumAt(int x, int y, momentum_t *momentum)
 {
@@ -123,8 +132,8 @@ inline internal momentum_t MomentumAt(int x, int y, momentum_t *momentum)
     }
     else // Pixel is outside screen area
     {
-        // Gotta return something. How about 0,0?
-        momentum_t out_of_bounds_momentum = {0,0};
+        // Gotta return something. How about -1,-1,0,0?
+        momentum_t out_of_bounds_momentum = {-1,-1,0,0};
         return out_of_bounds_momentum;
     }
 }
@@ -152,7 +161,7 @@ internal void InitProjectile(u32 *projectile_buffer, momentum_t *momentum_buffer
 {
     int x = SCREEN_HEIGHT-1;
     int y = SCREEN_WIDTH/2;
-    momentum_t momentum = {BLAST,0};
+    momentum_t momentum = {(float)x,(float)y,BLAST,0};
 
     if (ColorAt(x,y,projectile_buffer) == EMPTY_SPACE)
     {
@@ -187,8 +196,15 @@ internal void DrawProjectile( // u32 *frame, u32 *frame_next
             momentum_t momentum = MomentumAt(row, col, momentum_prev);
             // Decelerate
             momentum.dx += GRAVITY;
+            // Record new position in floating point
+            momentum.x += momentum.dx;
+            // Inspect color of this pixel and future location of this pixel
             u32 color = ColorAt(row, col, frame);
-            u32 row_predict = roundf(row+momentum.dx);
+            // NOTE: Don't use roundf().
+            // roundf() is defined in math.h. Including it REALLY slows compilation.
+            // A simple integer truncate seems to work just as well as rounding.
+            /* u32 row_predict = roundf(momentum.x); */
+            u32 row_predict = (int)(momentum.x);
             u32 color_predict = ColorAt(row_predict, col, frame);
             switch (color)
             {
@@ -198,14 +214,17 @@ internal void DrawProjectile( // u32 *frame, u32 *frame_next
                         {
                             // Erase the projectile
                             ColorSetUnsafe(row, col, EMPTY_SPACE, frame_next);
-                            momentum_t momentum_new = {0,0};
+                            momentum_t momentum_new = {0,0,0,0};
                             MomentumSetUnsafe(row, col, momentum_new, momentum_next);
                         }
                         // Keep moving: not at top of screen yet
                         else
                         {
+                            // Show projectile at future pixel location
                             ColorSetUnsafe(row_predict, col, PROJECTILE_COLOR, frame_next);
-                            MomentumSetUnsafe(row+momentum.dx, col+momentum.dy, momentum, momentum_next);
+                            // Record "actual" floating-point position at this
+                            // future pixel location
+                            MomentumSetUnsafe(row_predict, col, momentum, momentum_next);
                         }
                     break;
             }
@@ -215,7 +234,9 @@ internal void DrawProjectile( // u32 *frame, u32 *frame_next
 
 int main(int argc, char **argv)
 {
-    u8 frame_num = 0;
+    u8 frame_num = 1;
+    /* printf("%d",FRAMES_PER_PHYSICS); */
+    assert(FRAMES_PER_PHYSICS != 0);
     // ---------
     // | Setup |
     // ---------
@@ -421,7 +442,9 @@ int main(int argc, char **argv)
         // | Render to the screen |
         // ------------------------
 
+        if (frame_num++%FRAMES_PER_PHYSICS == 0)
         {
+            frame_num = 1;
             // -------------
             // | Rect Draw |
             // -------------
@@ -456,7 +479,7 @@ int main(int argc, char **argv)
                     );
             SDL_RenderPresent(renderer);
         }
-        SDL_Delay(16);
+        SDL_Delay(PHYSICS_DELAY);
 
     }
     // ---Cleanup---
